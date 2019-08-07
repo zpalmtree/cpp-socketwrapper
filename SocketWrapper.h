@@ -124,7 +124,7 @@ namespace sockwrapper
             const char *host,
             const int port = 80,
             const char messageDelimiter = '\n',
-            const time_t timeout_sec = 300);
+            const time_t timeout_sec = 10);
 
         virtual ~SocketWrapper();
 
@@ -221,7 +221,7 @@ namespace sockwrapper
             const char *host,
             int port = 443,
             const char messageDelimiter = '\n',
-            time_t timeout_sec = 300,
+            time_t timeout_sec = 10,
             const char *client_cert_path = nullptr,
             const char *client_key_path = nullptr);
 

@@ -76,7 +76,7 @@ SocketWrapper(
     const char *host,
     const int port,
     const char messageDelimiter = '\n',
-    const time_t timeout_sec = 300);
+    const time_t timeout_sec = 10);
 ```
 
 `host` - The host you want to open the socket on
