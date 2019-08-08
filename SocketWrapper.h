@@ -777,6 +777,11 @@ namespace sockwrapper
                 break;
             }
 
+            if (message == "")
+            {
+                continue;
+            }
+
             if (m_giveMeTheNextMessagePlease)
             {
                 m_nextMessagePromise.set_value(message);

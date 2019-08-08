@@ -87,7 +87,7 @@ SocketWrapper(
 
 This may need some work for use cases with more complicated protocols. Pull Requests welcome.
 
-`timeout_sec` - How long to wait before cancelling the connection in `start()`
+`timeout_sec` - How long to wait before cancelling the connection in `start()`, or cancel waiting for a response in `sendMessageAndGetResponse`
 
 #### `start()`
 
