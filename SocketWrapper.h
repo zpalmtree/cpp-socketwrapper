@@ -128,6 +128,10 @@ namespace sockwrapper
 
         virtual ~SocketWrapper();
 
+        /* Deleting the copy constructor to avoid the buffers and socket being
+           shared */
+        SocketWrapper(const SocketWrapper&) = delete;
+
         /* PUBLIC MEMBER FUNCTIONS */
 
         virtual bool is_valid() const;
