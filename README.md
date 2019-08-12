@@ -130,3 +130,7 @@ Functions identically to `sendMessageAndGetResponse(const std::string &message)`
 #### `onMessage(const std::function<void(const std::string message) callback)`
 
 Assigns a function to be called each time a message is received on the socket.
+
+#### `onSocketClosed(const std::function<void(void) callback)`
+
+Assigns a function to be called when the socket has been shutdown.
