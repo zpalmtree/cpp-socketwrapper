@@ -110,7 +110,7 @@ Returns false if the socket is invalid. Note that a return value of `true` does 
 
 Functions identically to `sendMessage(const std::string &message)` but takes a vector for convenience.
 
-#### `sendMessageAndGetResponse(const std::string &message)`
+#### `sendMessageAndGetResponse(const std::string &message, const bool timeout = true)`
 
 Sends a string down the socket, and waits for the next reply from the socket, which is then returned. The same caveats as `sendMessage` apply.
 
@@ -121,7 +121,9 @@ There is no way to solve this on the library end, as we have no insight into how
 
 Note that the `onMessage` callback will still be fired for the message you awaited for.
 
-#### `sendMessageAndGetResponse(const std::vector<uint8_t> &message)`
+The timeout argument configures whether we should wait forever for a message, or return `std::nullopt` after the timeout specified in the constructor elapses.
+
+#### `sendMessageAndGetResponse(const std::vector<uint8_t> &message, const bool timeout = true)`
 
 Functions identically to `sendMessageAndGetResponse(const std::string &message)` but takes a vector for convenience.
 
