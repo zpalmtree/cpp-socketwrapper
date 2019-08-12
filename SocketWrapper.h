@@ -162,6 +162,9 @@ namespace sockwrapper
         /* Register a function to be called when a message is received */
         void onMessage(const std::function<void(const std::string &message)> callback);
 
+        /* Register a function to be called when the socket is closed */
+        void onSocketClosed(const std::function<void(void)> callback);
+
       protected:
         /* PRIVATE MEMBER FUNCTIONS */
 
@@ -190,6 +193,9 @@ namespace sockwrapper
 
         /* The function to call upon message receieval */
         std::function<void(const std::string &message)> m_messageCallback;
+
+        /* The function to call upon socket closed */
+        std::function<void(void)> m_socketClosedCallback;
 
         /* The thread that listens for messages */
         std::thread m_listenThread;
@@ -327,7 +333,7 @@ namespace sockwrapper
                 }
             }
 
-            std::string getline(const char delimiter, const std::atomic<bool> &shouldStop)
+            std::optional<std::string> getline(const char delimiter, const std::atomic<bool> &shouldStop)
             {
                 fixed_buffer_used_size_ = 0;
                 glowable_buffer_.clear();
@@ -340,9 +346,9 @@ namespace sockwrapper
                     auto n = strm_.read(&byte, 1);
 
                     /* Socket possibly closed / timeout */
-                    if (n < 0)
+                    if (n == 0)
                     {
-                        continue;
+                        return std::nullopt;
                     }
 
                     /* Append the byte to the buffer */
@@ -355,44 +361,7 @@ namespace sockwrapper
                     }
                 }
 
-                return std::string();
-            }
-
-            bool getline()
-            {
-                fixed_buffer_used_size_ = 0;
-                glowable_buffer_.clear();
-
-                for (size_t i = 0;; i++)
-                {
-                    char byte;
-                    auto n = strm_.read(&byte, 1);
-
-                    if (n < 0)
-                    {
-                        return false;
-                    }
-                    else if (n == 0)
-                    {
-                        if (i == 0)
-                        {
-                            return false;
-                        }
-                        else
-                        {
-                            break;
-                        }
-                    }
-
-                    append(byte);
-
-                    if (byte == '\n')
-                    {
-                        break;
-                    }
-                }
-
-                return true;
+                return std::nullopt;
             }
 
           private:
@@ -792,6 +761,11 @@ namespace sockwrapper
         m_messageCallback = callback;
     }
 
+    inline void SocketWrapper::onSocketClosed(const std::function<void(void)> callback)
+    {
+        m_socketClosedCallback = callback;
+    }
+
     inline void SocketWrapper::waitForMessages()
     {
         const auto bufsiz = 4096;
@@ -801,27 +775,32 @@ namespace sockwrapper
         {
             detail::stream_line_reader reader(m_socketStream, buf, bufsiz);
 
-            const std::string message = reader.getline(m_messageDelimiter, m_shouldStop);
+            const auto message = reader.getline(m_messageDelimiter, m_shouldStop);
 
             if (m_shouldStop)
             {
                 break;
             }
 
-            if (message == "")
+            if (!message)
             {
-                continue;
+                if (m_socketClosedCallback)
+                {
+                    m_socketClosedCallback();
+                }
+
+                break;
             }
 
             if (m_giveMeTheNextMessagePlease)
             {
-                m_nextMessagePromise.set_value(message);
+                m_nextMessagePromise.set_value(*message);
                 m_giveMeTheNextMessagePlease = false;
             }
 
             if (m_messageCallback)
             {
-                m_messageCallback(message);
+                m_messageCallback(*message);
             }
         }
     }
