@@ -64,6 +64,17 @@ inline const unsigned char *ASN1_STRING_get0_data(const ASN1_STRING *asn1)
 #endif
 #endif
 
+/* send() on a closed socket will crash our program. MSG_NOSIGNAL disables this.
+   However, this is not available on windows (it doesn't crash our program),
+   so we can set it to 0. If it's not on osx, we can use SO_NOSIGPIPE instead */
+#ifndef MSG_NOSIGNAL
+    #ifdef SO_NOSIGPIPE
+        #define MSG_NOSIGNAL SO_NOSIGPIPE
+    #else
+        #define MSG_NOSIGNAL 0
+    #endif
+#endif
+
 /*
  * Configuration
  */
@@ -601,7 +612,7 @@ namespace sockwrapper
 
     inline int SocketStream::write(const char *ptr, size_t size)
     {
-        return send(sock_, ptr, static_cast<int>(size), 0);
+        return send(sock_, ptr, static_cast<int>(size), MSG_NOSIGNAL);
     }
 
     inline int SocketStream::write(const char *ptr)
