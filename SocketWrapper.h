@@ -789,6 +789,11 @@ namespace sockwrapper
                     m_socketClosedCallback();
                 }
 
+                if (m_socket != INVALID_SOCKET)
+                {
+                    detail::shutdown_socket(m_socket);
+                }
+
                 break;
             }
 
