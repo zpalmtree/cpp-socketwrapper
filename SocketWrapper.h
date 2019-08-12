@@ -146,7 +146,7 @@ namespace sockwrapper
         bool sendMessage(const std::string &message);
 
         /* Send a message down the socket and wait for the next response (Can time out) */
-        std::optional<std::string> sendMessageAndGetResponse(const std::string &message);
+        std::optional<std::string> sendMessageAndGetResponse(const std::string &message, const bool timeout = true);
 
         /* Register a function to be called when a message is received */
         void onMessage(const std::function<void(const std::string &message)> callback);
@@ -740,7 +740,7 @@ namespace sockwrapper
         return true;
     }
 
-    inline std::optional<std::string> SocketWrapper::sendMessageAndGetResponse(const std::string &message)
+    inline std::optional<std::string> SocketWrapper::sendMessageAndGetResponse(const std::string &message, const bool timeout)
     {
         const bool success = sendMessage(message);
 
@@ -755,9 +755,25 @@ namespace sockwrapper
 
         m_giveMeTheNextMessagePlease = true;
 
-        const std::string result = futureMessage.get();
+        /* Wait forever */
+        if (!timeout)
+        {
+            return futureMessage.get();
+        }
+        /* Else wait for the timeout before returning nothing */
+        else
+        {
+            std::future_status status = futureMessage.wait_for(std::chrono::seconds(timeout_sec_));
 
-        return result;
+            if (status == std::future_status::ready)
+            {
+                return futureMessage.get();
+            }
+            else
+            {
+                return std::nullopt;
+            }
+        }
     }
 
     inline void SocketWrapper::onMessage(const std::function<void(const std::string &message)> callback)
