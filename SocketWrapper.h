@@ -679,6 +679,11 @@ namespace sockwrapper
             return false;
         }
 
+        if (m_listenThread.joinable())
+        {
+            m_listenThread.join();
+        }
+
         m_socketStream = SocketStream(m_socket);
         m_shouldStop = false;
         m_started = true;
