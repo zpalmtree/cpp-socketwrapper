@@ -346,7 +346,7 @@ namespace sockwrapper
                     auto n = strm_.read(&byte, 1);
 
                     /* Socket possibly closed / timeout */
-                    if (n == 0)
+                    if (n < 0)
                     {
                         return std::nullopt;
                     }
