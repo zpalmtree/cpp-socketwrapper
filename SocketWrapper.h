@@ -345,10 +345,16 @@ namespace sockwrapper
                     /* Read a byte */
                     auto n = strm_.read(&byte, 1);
 
-                    /* Socket possibly closed / timeout */
-                    if (n <= 0)
+                    /* Zero bytes read = socket closed */
+                    if (n == 0)
                     {
                         return std::nullopt;
+                    }
+
+                    /* < zero bytes = timeout or error */
+                    if (n < 0)
+                    {
+                        continue;
                     }
 
                     /* Append the byte to the buffer */
