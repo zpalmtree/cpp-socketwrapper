@@ -189,7 +189,7 @@ namespace sockwrapper
         socket_t m_socket = INVALID_SOCKET;
 
         /* The socket reader/writer */
-        SocketStream m_socketStream;
+        std::shared_ptr<Stream> m_socketStream;
 
         /* The function to call upon message receieval */
         std::function<void(const std::string &message)> m_messageCallback;
@@ -232,7 +232,7 @@ namespace sockwrapper
 
       private:
         socket_t sock_;
-        SSL *ssl_;
+        SSL *m_ssl;
     };
 
     class SSLSocketWrapper : public SocketWrapper
@@ -250,24 +250,26 @@ namespace sockwrapper
 
         virtual bool is_valid() const;
 
-        void set_ca_cert_path(const char *ca_ceert_file_path, const char *ca_cert_dir_path = nullptr);
-        void enable_server_certificate_verification(bool enabled);
+        bool start();
 
-        long get_openssl_verify_result() const;
+        bool sendMessage(const std::string &message);
+
+        void stop();
+
+        void shutdownSSL();
 
       private:
-        bool verify_host(X509 *server_cert) const;
-        bool verify_host_with_subject_alt_name(X509 *server_cert) const;
-        bool verify_host_with_common_name(X509 *server_cert) const;
-        bool check_host_name(const char *pattern, size_t pattern_len) const;
-
         SSL_CTX *ctx_;
+
         std::mutex ctx_mutex_;
-        std::vector<std::string> host_components_;
+
         std::string ca_cert_file_path_;
+
         std::string ca_cert_dir_path_;
-        bool server_certificate_verification_ = false;
+
         long verify_result_ = 0;
+
+        SSL *m_ssl = nullptr;
     };
 #endif
 
@@ -276,27 +278,6 @@ namespace sockwrapper
      */
     namespace detail
     {
-        template<class Fn> void split(const char *b, const char *e, char d, Fn fn)
-        {
-            int i = 0;
-            int beg = 0;
-
-            while (e ? (b + i != e) : (b[i] != '\0'))
-            {
-                if (b[i] == d)
-                {
-                    fn(&b[beg], &b[i]);
-                    beg = i + 1;
-                }
-                i++;
-            }
-
-            if (i)
-            {
-                fn(&b[beg], &b[i]);
-            }
-        }
-
         // NOTE: until the read size reaches `fixed_buffer_size`, use `fixed_buffer`
         // to store data. The call can set memory on stack for performance.
         class stream_line_reader
@@ -631,7 +612,6 @@ namespace sockwrapper
         return buffer;
     }
 
-    // HTTP client implementation
     inline SocketWrapper::SocketWrapper(
         const char *host,
         const int port,
@@ -690,7 +670,7 @@ namespace sockwrapper
             m_listenThread.join();
         }
 
-        m_socketStream = SocketStream(m_socket);
+        m_socketStream = std::make_shared<SocketStream>(m_socket);
         m_shouldStop = false;
         m_started = true;
 
@@ -706,7 +686,8 @@ namespace sockwrapper
 
         if (m_socket != INVALID_SOCKET)
         {
-            detail::shutdown_socket(m_socket);
+            detail::close_socket(m_socket);
+            m_socket = INVALID_SOCKET;
         }
 
         if (m_listenThread.joinable())
@@ -726,7 +707,7 @@ namespace sockwrapper
 
         std::scoped_lock<std::mutex> lock(m_sendMutex);
 
-        m_socketStream.write(message);
+        m_socketStream->write(message);
 
         return true;
     }
@@ -784,7 +765,7 @@ namespace sockwrapper
 
         while (!m_shouldStop)
         {
-            detail::stream_line_reader reader(m_socketStream, buf, bufsiz);
+            detail::stream_line_reader reader(*m_socketStream, buf, bufsiz);
 
             const auto message = reader.getline(m_messageDelimiter, m_shouldStop);
 
@@ -802,7 +783,7 @@ namespace sockwrapper
 
                 if (m_socket != INVALID_SOCKET)
                 {
-                    detail::shutdown_socket(m_socket);
+                    detail::close_socket(m_socket);
                 }
 
                 break;
@@ -886,23 +867,23 @@ namespace sockwrapper
     } // namespace detail
 
     // SSL socket stream implementation
-    inline SSLSocketStream::SSLSocketStream(socket_t sock, SSL *ssl): sock_(sock), ssl_(ssl) {}
+    inline SSLSocketStream::SSLSocketStream(socket_t sock, SSL *ssl): sock_(sock), m_ssl(ssl) {}
 
     inline SSLSocketStream::~SSLSocketStream() {}
 
     inline int SSLSocketStream::read(char *ptr, size_t size)
     {
-        if (SSL_pending(ssl_) > 0
+        if (SSL_pending(m_ssl) > 0
             || detail::select_read(sock_, SOCKETWRAPPER_READ_TIMEOUT_SECOND, SOCKETWRAPPER_READ_TIMEOUT_USECOND) > 0)
         {
-            return SSL_read(ssl_, ptr, size);
+            return SSL_read(m_ssl, ptr, size);
         }
         return -1;
     }
 
     inline int SSLSocketStream::write(const char *ptr, size_t size)
     {
-        return SSL_write(ssl_, ptr, size);
+        return SSL_write(m_ssl, ptr, size);
     }
 
     inline int SSLSocketStream::write(const char *ptr)
@@ -927,9 +908,6 @@ namespace sockwrapper
     {
         ctx_ = SSL_CTX_new(SSLv23_client_method());
 
-        detail::split(&m_host[0], &m_host[m_host.size()], '.', [&](const char *b, const char *e) {
-            host_components_.emplace_back(std::string(b, e));
-        });
         if (client_cert_path && client_key_path)
         {
             if (SSL_CTX_use_certificate_file(ctx_, client_cert_path, SSL_FILETYPE_PEM) != 1
@@ -939,6 +917,127 @@ namespace sockwrapper
                 ctx_ = nullptr;
             }
         }
+    }
+
+    inline bool SSLSocketWrapper::start()
+    {
+        /* Already started */
+        if (m_started)
+        {
+            return true;
+        }
+
+        /* Create the socket */
+        m_socket = detail::create_socket(m_host.c_str(), m_port, [=](socket_t sock, struct addrinfo &ai) {
+            detail::set_nonblocking(sock, true);
+
+            auto ret = connect(sock, ai.ai_addr, static_cast<int>(ai.ai_addrlen));
+            if (ret < 0)
+            {
+                if (detail::is_connection_error() || !detail::wait_until_socket_is_ready(sock, timeout_sec_, 0))
+                {
+                    detail::close_socket(sock);
+                    return false;
+                }
+            }
+
+            detail::set_nonblocking(sock, false);
+            return true;
+        });
+
+        if (m_socket == INVALID_SOCKET)
+        {
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> guard(ctx_mutex_);
+            m_ssl = SSL_new(ctx_);
+        }
+
+        if (!m_ssl)
+        {
+            detail::close_socket(m_socket);
+            return false;
+        }
+
+        auto bio = BIO_new_socket(m_socket, BIO_NOCLOSE);
+        SSL_set_bio(m_ssl, bio, bio);
+
+        SSL_set_tlsext_host_name(m_ssl, m_host.c_str());
+
+        if (ca_cert_file_path_.empty())
+        {
+            SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
+        }
+        else
+        {
+            if (!SSL_CTX_load_verify_locations(ctx_, ca_cert_file_path_.c_str(), nullptr))
+            {
+                shutdownSSL();
+                return false;
+            }
+
+            SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+        }
+
+        if (SSL_connect(m_ssl) != 1)
+        {
+            shutdownSSL();
+            return false;
+        }
+
+        if (m_listenThread.joinable())
+        {
+            m_listenThread.join();
+        }
+
+        m_socketStream = std::make_shared<SSLSocketStream>(m_socket, m_ssl);
+        m_shouldStop = false;
+        m_started = true;
+
+        /* Start listening for messages */
+        m_listenThread = std::thread(&SSLSocketWrapper::waitForMessages, this);
+
+        return true;
+    }
+
+    inline void SSLSocketWrapper::stop()
+    {
+        SocketWrapper::stop();
+        shutdownSSL();
+    }
+
+    inline void SSLSocketWrapper::shutdownSSL()
+    {
+        if (m_socket != INVALID_SOCKET)
+        {
+            detail::close_socket(m_socket);
+        }
+
+        if (m_ssl != nullptr)
+        {
+            SSL_shutdown(m_ssl);
+
+            {
+                std::lock_guard<std::mutex> guard(ctx_mutex_);
+                SSL_free(m_ssl);
+            }
+        }
+    }
+
+    inline bool SSLSocketWrapper::sendMessage(const std::string &message)
+    {
+        if (m_socket == INVALID_SOCKET)
+        {
+            return false;
+        }
+
+        std::scoped_lock<std::mutex> lock(m_sendMutex);
+
+        m_socketStream->write(message);
+
+        return true;
     }
 
     inline SSLSocketWrapper::~SSLSocketWrapper()
@@ -954,177 +1053,6 @@ namespace sockwrapper
         return ctx_;
     }
 
-    inline void SSLSocketWrapper::set_ca_cert_path(const char *ca_cert_file_path, const char *ca_cert_dir_path)
-    {
-        if (ca_cert_file_path)
-        {
-            ca_cert_file_path_ = ca_cert_file_path;
-        }
-        if (ca_cert_dir_path)
-        {
-            ca_cert_dir_path_ = ca_cert_dir_path;
-        }
-    }
-
-    inline void SSLSocketWrapper::enable_server_certificate_verification(bool enabled)
-    {
-        server_certificate_verification_ = enabled;
-    }
-
-    inline long SSLSocketWrapper::get_openssl_verify_result() const
-    {
-        return verify_result_;
-    }
-
-    inline bool SSLSocketWrapper::verify_host(X509 *server_cert) const
-    {
-        /* Quote from RFC2818 section 3.1 "Server Identity"
-
-           If a subjectAltName extension of type dNSName is present, that MUST
-           be used as the identity. Otherwise, the (most specific) Common Name
-           field in the Subject field of the certificate MUST be used. Although
-           the use of the Common Name is existing practice, it is deprecated and
-           Certification Authorities are encouraged to use the dNSName instead.
-
-           Matching is performed using the matching rules specified by
-           [RFC2459].  If more than one identity of a given type is present in
-           the certificate (e.g., more than one dNSName name, a match in any one
-           of the set is considered acceptable.) Names may contain the wildcard
-           character * which is considered to match any single domain name
-           component or component fragment. E.g., *.a.com matches foo.a.com but
-           not bar.foo.a.com. f*.com matches foo.com but not bar.com.
-
-           In some cases, the URI is specified as an IP address rather than a
-           hostname. In this case, the iPAddress subjectAltName must be present
-           in the certificate and must exactly match the IP in the URI.
-
-        */
-        return verify_host_with_subject_alt_name(server_cert) || verify_host_with_common_name(server_cert);
-    }
-
-    inline bool SSLSocketWrapper::verify_host_with_subject_alt_name(X509 *server_cert) const
-    {
-        auto ret = false;
-
-        auto type = GEN_DNS;
-
-        struct in6_addr addr6;
-        struct in_addr addr;
-        size_t addr_len = 0;
-
-        if (inet_pton(AF_INET6, m_host.c_str(), &addr6))
-        {
-            type = GEN_IPADD;
-            addr_len = sizeof(struct in6_addr);
-        }
-        else if (inet_pton(AF_INET, m_host.c_str(), &addr))
-        {
-            type = GEN_IPADD;
-            addr_len = sizeof(struct in_addr);
-        }
-
-        auto alt_names = static_cast<const struct stack_st_GENERAL_NAME *>(
-            X509_get_ext_d2i(server_cert, NID_subject_alt_name, nullptr, nullptr));
-
-        if (alt_names)
-        {
-            auto dsn_matched = false;
-            auto ip_mached = false;
-
-            auto count = sk_GENERAL_NAME_num(alt_names);
-
-            for (auto i = 0; i < count && !dsn_matched; i++)
-            {
-                auto val = sk_GENERAL_NAME_value(alt_names, i);
-                if (val->type == type)
-                {
-                    auto name = (const char *)ASN1_STRING_get0_data(val->d.ia5);
-                    auto name_len = (size_t)ASN1_STRING_length(val->d.ia5);
-
-                    if (strlen(name) == name_len)
-                    {
-                        switch (type)
-                        {
-                            case GEN_DNS:
-                                dsn_matched = check_host_name(name, name_len);
-                                break;
-
-                            case GEN_IPADD:
-                                if (!memcmp(&addr6, name, addr_len) || !memcmp(&addr, name, addr_len))
-                                {
-                                    ip_mached = true;
-                                }
-                                break;
-                        }
-                    }
-                }
-            }
-
-            if (dsn_matched || ip_mached)
-            {
-                ret = true;
-            }
-        }
-
-        GENERAL_NAMES_free((STACK_OF(GENERAL_NAME) *)alt_names);
-
-        return ret;
-    }
-
-    inline bool SSLSocketWrapper::verify_host_with_common_name(X509 *server_cert) const
-    {
-        const auto subject_name = X509_get_subject_name(server_cert);
-
-        if (subject_name != nullptr)
-        {
-            char name[BUFSIZ];
-            auto name_len = X509_NAME_get_text_by_NID(subject_name, NID_commonName, name, sizeof(name));
-
-            if (name_len != -1)
-            {
-                return check_host_name(name, name_len);
-            }
-        }
-
-        return false;
-    }
-
-    inline bool SSLSocketWrapper::check_host_name(const char *pattern, size_t pattern_len) const
-    {
-        if (m_host.size() == pattern_len && m_host == pattern)
-        {
-            return true;
-        }
-
-        // Wildcard match
-        // https://bugs.launchpad.net/ubuntu/+source/firefox-3.0/+bug/376484
-        std::vector<std::string> pattern_components;
-        detail::split(&pattern[0], &pattern[pattern_len], '.', [&](const char *b, const char *e) {
-            pattern_components.emplace_back(std::string(b, e));
-        });
-
-        if (host_components_.size() != pattern_components.size())
-        {
-            return false;
-        }
-
-        auto itr = pattern_components.begin();
-        for (const auto &h : host_components_)
-        {
-            auto &p = *itr;
-            if (p != h && p != "*")
-            {
-                auto partial_match = (p.size() > 0 && p[p.size() - 1] == '*' && !p.compare(0, p.size() - 1, h));
-                if (!partial_match)
-                {
-                    return false;
-                }
-            }
-            ++itr;
-        }
-
-        return true;
-    }
 #endif
 
 } // namespace sockwrapper
