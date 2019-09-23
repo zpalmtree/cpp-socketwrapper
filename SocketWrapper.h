@@ -148,10 +148,10 @@ namespace sockwrapper
         virtual bool is_valid() const;
 
         /* Initialize the socket connection and start listening for messages */
-        bool start();
+        virtual bool start();
 
         /* Close the socket connection and stop listening for messages */
-        void stop();
+        virtual void stop();
 
         /* Send a message down the socket */
         bool sendMessage(const std::string &message);
@@ -252,13 +252,11 @@ namespace sockwrapper
 
         bool start();
 
-        bool sendMessage(const std::string &message);
-
         void stop();
 
+      private:
         void shutdownSSL();
 
-      private:
         SSL_CTX *ctx_;
 
         std::mutex ctx_mutex_;
@@ -1024,20 +1022,6 @@ namespace sockwrapper
                 SSL_free(m_ssl);
             }
         }
-    }
-
-    inline bool SSLSocketWrapper::sendMessage(const std::string &message)
-    {
-        if (m_socket == INVALID_SOCKET)
-        {
-            return false;
-        }
-
-        std::scoped_lock<std::mutex> lock(m_sendMutex);
-
-        m_socketStream->write(message);
-
-        return true;
     }
 
     inline SSLSocketWrapper::~SSLSocketWrapper()
