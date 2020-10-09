@@ -774,14 +774,15 @@ namespace sockwrapper
 
             if (!message)
             {
-                if (m_socketClosedCallback)
-                {
-                    m_socketClosedCallback();
-                }
-
                 if (m_socket != INVALID_SOCKET)
                 {
                     detail::close_socket(m_socket);
+                    m_socket = INVALID_SOCKET;
+                }
+
+                if (m_socketClosedCallback)
+                {
+                    m_socketClosedCallback();
                 }
 
                 break;
